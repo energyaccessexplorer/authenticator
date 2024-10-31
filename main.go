@@ -29,7 +29,6 @@ type CustomClaims struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
 	Role  string `json:"role"`
-	World string `json:"world"`
 	jwt.RegisteredClaims
 }
 
@@ -160,10 +159,9 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 		id := uuid.NewSHA1(uuid.NameSpaceX500, []byte(responseData["id"].(string)))
 		claims := CustomClaims{
 			ID:    id.String(),
-			Name:  "nothing",
+			Name:  "Name", // @TODO get from applicationData
 			Email: responseData["email"].(string),
-			Role:  "root",
-			World: "eae",
+			Role:  "guest", // @TODO get from applicationData
 			RegisteredClaims: jwt.RegisteredClaims{
 				IssuedAt:  jwt.NewNumericDate(time.Now()),
 				ExpiresAt: jwt.NewNumericDate(time.Now().Add(30 * time.Minute)),
