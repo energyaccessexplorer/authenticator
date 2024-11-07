@@ -12,11 +12,13 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 var db *gorm.DB
+var port string
 var jwtSecret string
 var resourceWatchAPIUrl string
 var appName string
@@ -41,12 +43,20 @@ type LoginRequest struct {
 }
 
 func init() {
+	dotenv_err := godotenv.Load()
+	if dotenv_err != nil {
+		log.Fatalf("Error loading .env file")
+	}
+
+	port = os.Getenv("PORT")
 	jwtSecret = os.Getenv("PGREST_SECRET")
 	resourceWatchAPIUrl = "https://api.resourcewatch.org"
 	appName = os.Getenv("APP_NAME")
 	callbackUrl = os.Getenv("CALLBACK_URL")
 
 	dsn := os.Getenv("DATABASE_URI")
+	fmt.Println("Database URI:", dsn)
+
 	fmt.Println(dsn)
 	var err error
 	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
@@ -54,28 +64,6 @@ func init() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	db.AutoMigrate(&User{})
-}
-
-func jwtValidation() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tokenString := c.GetHeader("Authorization")
-		if tokenString == "" || !strings.HasPrefix(tokenString, "Bearer ") {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token is missing or invalid"})
-			c.Abort()
-			return
-		}
-		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
-
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return []byte(jwtSecret), nil
-		})
-		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
 }
 
 func createUser(c *gin.Context) {
@@ -215,7 +203,7 @@ func main() {
 	r.POST("/signup", createUser)
 	r.POST("/login", login)
 
-	if err := r.Run(":5003"); err != nil {
+	if err := r.Run(port); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
