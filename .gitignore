@@ -19,7 +19,6 @@ vendor/
 
 # Environment variables
 .env
-.env.*
 
 # IDE/editor files
 .vscode/
