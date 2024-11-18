@@ -25,7 +25,6 @@ var appName string
 var callbackUrl string
 
 type User struct {
-	ID     uint            `gorm:"primaryKey"`
 	UserID string          `gorm:"unique;not null"`
 	Email  string          `gorm:"unique;not null"`
 	Role   string          `gorm:"not null"`
