@@ -34,11 +34,8 @@ This server is written in Go and allows users to sign up and log in via the Reso
    Run the following commands to install necessary dependencies.
 
    ```bash
-   go get -u github.com/gorilla/mux
-   go get -u github.com/joho/godotenv
-   go get -u github.com/golang-jwt/jwt/v5
-   go get -u github.com/google/uuid
-
+   go get
+   ```
 ## Running
 
 ```
