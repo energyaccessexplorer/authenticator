@@ -3,206 +3,239 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 
-	"github.com/dgrijalva/jwt-go"
-	"github.com/gin-contrib/cors"
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
+	"github.com/pkg/errors"
 )
 
-var db *gorm.DB
-var port string
-var jwtSecret string
-var resourceWatchAPIUrl string
-var appName string
-var callbackUrl string
+var (
+	RESOURCE_WATCH_API_URL = "https://api.resourcewatch.org"
+	JWT_SECRET             string
+	MAC_SECRET_KEY         string
+	CALLBACK_URL           string
+	APP_NAME               string
+)
 
-type User struct {
-	UserID string          `gorm:"unique;not null"`
-	Email  string          `gorm:"unique;not null"`
-	Role   string          `gorm:"not null"`
-	Data   json.RawMessage `gorm:"type:json"`
+// Struct for account payload
+type AccountPayload struct {
+	Email string   `json:"email"`
+	Name  string   `json:"name"`
+	Apps  []string `json:"apps"`
 }
 
+// Struct to handle signup request
 type SignupRequest struct {
-	Email    string                 `json:"email"`
-	JsonData map[string]interface{} `json:"jsondata"`
+	Email    string `json:"email"`
+	JsonData struct {
+		FirstName string `json:"first_name"`
+	} `json:"jsondata"`
 }
 
+// Struct to handle login request
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
-func init() {
-	dotenv_err := godotenv.Load()
-	if dotenv_err != nil {
-		log.Fatalf("Error loading .env file")
-	}
-
-	port = os.Getenv("PORT")
-	jwtSecret = os.Getenv("PGREST_SECRET")
-	resourceWatchAPIUrl = "https://api.resourcewatch.org"
-	appName = os.Getenv("APP_NAME")
-	callbackUrl = os.Getenv("CALLBACK_URL")
-
-	dsn := os.Getenv("DATABASE_URI")
-	fmt.Println("Database URI:", dsn)
-
-	fmt.Println(dsn)
-	var err error
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-	db.AutoMigrate(&User{})
+// Struct for user data
+type User struct {
+	Sub   string `json:"sub"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
+	Data  struct {
+		FirstName string `json:"first_name"`
+	} `json:"data"`
 }
 
-func createUser(c *gin.Context) {
-	var req SignupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing required fields"})
+// Struct for API response
+type ResourceWatchResponse struct {
+	Data struct {
+		ID  string `json:"id"`
+		Sub string `json:"sub"`
+	} `json:"data"`
+}
+
+// Struct for response formatting
+type Response struct {
+	Error   string `json:"error,omitempty"`
+	Details string `json:"details,omitempty"`
+	Token   string `json:"token,omitempty"`
+	Data    string `json:"data,omitempty"`
+}
+
+func init() {
+	// Load .env file for environment variables
+	if err := godotenv.Load(); err != nil {
+		log.Fatal("Error loading .env file")
+	}
+	JWT_SECRET = os.Getenv("PGREST_SECRET")
+	MAC_SECRET_KEY = os.Getenv("MAC_SECRET_KEY")
+	CALLBACK_URL = os.Getenv("CALLBACK_URL")
+	APP_NAME = os.Getenv("APP_NAME")
+}
+
+func main() {
+	r := mux.NewRouter()
+	r.HandleFunc("/signup", signupHandler).Methods("POST")
+	r.HandleFunc("/login", loginHandler).Methods("POST")
+	http.Handle("/", r)
+
+	log.Println("Server started at http://localhost:5003")
+	log.Fatal(http.ListenAndServe(":5003", nil))
+}
+
+func signupHandler(w http.ResponseWriter, r *http.Request) {
+	var signupRequest SignupRequest
+	if err := json.NewDecoder(r.Body).Decode(&signupRequest); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding request: %s", err), http.StatusBadRequest)
 		return
 	}
 
-	accountPayload := map[string]interface{}{
-		"email": req.Email,
-		"name":  req.JsonData["first_name"],
-		"apps":  []string{appName},
+	if signupRequest.Email == "" {
+		http.Error(w, "Missing required fields", http.StatusBadRequest)
+		return
 	}
 
-	accountPayloadBytes, err := json.Marshal(accountPayload)
+	accountPayload := AccountPayload{
+		Email: signupRequest.Email,
+		Name:  signupRequest.JsonData.FirstName,
+		Apps:  []string{APP_NAME},
+	}
+
+	// Make request to Resource Watch API
+	resp, err := makeAPIRequest(http.MethodPost, "/auth/sign-up?callbackUrl="+CALLBACK_URL, accountPayload)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode JSON payload"})
-		return
-	}
-	response, err := http.Post(fmt.Sprintf("%s/auth/sign-up?callbackUrl=%s", resourceWatchAPIUrl, callbackUrl), "application/json", strings.NewReader(string(accountPayloadBytes)))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "An error occurred", "details": err.Error()})
-		return
-	}
-	defer response.Body.Close()
-
-	var responseData map[string]interface{}
-	if err := json.NewDecoder(response.Body).Decode(&responseData); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response data"})
+		http.Error(w, fmt.Sprintf("Error signing up: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	userID := responseData["data"].(map[string]interface{})["id"].(string)
-	uuidV5 := uuid.NewSHA1(uuid.NameSpaceX500, []byte(userID))
-
-	// Convert JsonData to json.RawMessage
-	jsonData, err := json.Marshal(req.JsonData)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode JSON data"})
+	var signupResponse ResourceWatchResponse
+	if err := json.Unmarshal(resp, &signupResponse); err != nil {
+		http.Error(w, "Error parsing response from Resource Watch", http.StatusInternalServerError)
 		return
 	}
 
 	newUser := User{
-		UserID: uuidV5.String(),
-		Email:  req.Email,
-		Role:   "guest",
-		Data:   json.RawMessage(jsonData),
+		Sub:   signupResponse.Data.ID,
+		Email: signupRequest.Email,
+		Role:  "guest",
 	}
 
-	if err := db.Create(&newUser).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "An error occurred", "details": err.Error()})
-		return
-	}
+	// @TODO: Save the new user to PostgREST
+	fmt.Println(newUser)
 
-	c.JSON(http.StatusCreated, gin.H{"message": "User registered successfully! Please check your email inbox to activate your account."})
+	w.WriteHeader(http.StatusCreated)
+	fmt.Fprintf(w, "User registered successfully! Please check your email inbox to activate your account.")
 }
 
-func login(c *gin.Context) {
-	var req LoginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing required field"})
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	var loginRequest LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&loginRequest); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding request: %s", err), http.StatusBadRequest)
 		return
 	}
 
-	payload := map[string]interface{}{
-		"email":    req.Email,
-		"password": req.Password,
+	if loginRequest.Email == "" || loginRequest.Password == "" {
+		http.Error(w, "Missing required fields", http.StatusBadRequest)
+		return
 	}
 
-	payloadBytes, err := json.Marshal(payload)
+	payload := map[string]string{
+		"email":    loginRequest.Email,
+		"password": loginRequest.Password,
+	}
+
+	// Make request to Resource Watch API
+	resp, err := makeAPIRequest(http.MethodPost, "/auth/login", payload)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode JSON payload"})
+		http.Error(w, fmt.Sprintf("Error logging in: %v", err), http.StatusInternalServerError)
 		return
 	}
-	response, err := http.Post(fmt.Sprintf("%s/auth/login", resourceWatchAPIUrl), "application/json", strings.NewReader(string(payloadBytes)))
+
+	var responseData ResourceWatchResponse
+	if err := json.Unmarshal(resp, &responseData); err != nil {
+		http.Error(w, "Error parsing response from Resource Watch", http.StatusInternalServerError)
+		return
+	}
+
+	sub := responseData.Data.Sub
+
+	// @TODO: Get user from PostgREST
+	user := User{
+		Sub:   sub,
+		Email: loginRequest.Email,
+		Role:  "guest",
+	}
+
+	token, err := generateJWT(user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "An error occurred", "details": err.Error()})
-		return
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		c.JSON(response.StatusCode, gin.H{"error": "Failed to login"})
+		http.Error(w, fmt.Sprintf("Error generating token: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	var responseData map[string]interface{}
-	if err := json.NewDecoder(response.Body).Decode(&responseData); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response data"})
-		return
-	}
-	data := responseData["data"].(map[string]interface{})
-
-	userID := data["id"].(string)
-	uuidV5 := uuid.NewSHA1(uuid.NameSpaceX500, []byte(userID))
-
-	var user User
-	if err := db.First(&user, "user_id = ?", uuidV5.String()).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
-		return
+	response := Response{
+		Token: token,
+		Data:  fmt.Sprintf("%v", responseData),
 	}
 
-	var userData map[string]interface{}
-	if err := json.Unmarshal(user.Data, &userData); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse user data"})
-		return
-	}
-
-	tokenPayload := jwt.MapClaims{
-		"id":       user.UserID,
-		"name":     userData["first_name"],
-		"email":    user.Email,
-		"role":     user.Role,
-		"data":     userData,
-		"rw_token": data["token"],
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, tokenPayload)
-	tokenString, err := token.SignedString([]byte(jwtSecret))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"token": tokenString, "data": data})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
-func main() {
-	r := gin.Default()
+func makeAPIRequest(method, path string, payload interface{}) ([]byte, error) {
+	client := &http.Client{}
+	url := RESOURCE_WATCH_API_URL + path
 
-	r.Use(cors.New(cors.Config{
-		AllowOrigins: []string{"http://eae.localhost", "https://*.energyaccessexplorer.org"},
-		AllowMethods: []string{"GET", "POST"},
-	}))
-
-	r.POST("/signup", createUser)
-	r.POST("/login", login)
-
-	if err := r.Run(port); err != nil {
-		log.Fatalf("Server failed to start: %v", err)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal request payload")
 	}
+
+	req, err := http.NewRequest(method, url, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to send request")
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read response body")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API request failed with status: %d", resp.StatusCode)
+	}
+
+	return respBody, nil
+}
+
+func generateJWT(user User) (string, error) {
+	claims := jwt.MapClaims{
+		"sub":   user.Sub,
+		"name":  user.Data.FirstName,
+		"email": user.Email,
+		"role":  user.Role,
+		"data":  user.Data,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(JWT_SECRET))
+	if err != nil {
+		return "", errors.Wrap(err, "failed to sign token")
+	}
+
+	return tokenString, nil
 }
