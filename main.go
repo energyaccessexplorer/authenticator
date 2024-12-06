@@ -40,7 +40,7 @@ type SignupRequest struct {
 
 // Struct to handle login request
 type LoginRequest struct {
-	Email    string `json:"email"`
+	Email    string `json:"password"`
 	Password string `json:"password"`
 }
 
@@ -54,10 +54,16 @@ type User struct {
 	} `json:"data"`
 }
 
-// Struct for API response
-type ResourceWatchResponse struct {
+// Struct for Resource Watch sign-up response
+type SignupResponse struct {
 	Data struct {
-		ID  string `json:"id"`
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+// Struct for Resource Watch login response
+type LoginResponse struct {
+	Data struct {
 		Sub string `json:"sub"`
 	} `json:"data"`
 }
@@ -116,7 +122,7 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var signupResponse ResourceWatchResponse
+	var signupResponse SignupResponse
 	if err := json.Unmarshal(resp, &signupResponse); err != nil {
 		http.Error(w, "Error parsing response from Resource Watch", http.StatusInternalServerError)
 		return
@@ -126,6 +132,9 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 		Sub:   signupResponse.Data.ID,
 		Email: signupRequest.Email,
 		Role:  "guest",
+		Data: struct {
+			FirstName string `json:"first_name"`
+		}{FirstName: signupRequest.JsonData.FirstName}, // Initialize the nested struct
 	}
 
 	// @TODO: Save the new user to PostgREST
@@ -151,6 +160,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		"email":    loginRequest.Email,
 		"password": loginRequest.Password,
 	}
+	fmt.Println(payload)
 
 	// Make request to Resource Watch API
 	resp, err := makeAPIRequest(http.MethodPost, "/auth/login", payload)
@@ -159,13 +169,14 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var responseData ResourceWatchResponse
-	if err := json.Unmarshal(resp, &responseData); err != nil {
+	var loginResponse LoginResponse
+	if err := json.Unmarshal(resp, &loginResponse); err != nil {
 		http.Error(w, "Error parsing response from Resource Watch", http.StatusInternalServerError)
 		return
 	}
 
-	sub := responseData.Data.Sub
+	fmt.Println(loginResponse)
+	sub := loginResponse.Data.Sub
 
 	// @TODO: Get user from PostgREST
 	user := User{
@@ -182,7 +193,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	response := Response{
 		Token: token,
-		Data:  fmt.Sprintf("%v", responseData),
+		Data:  fmt.Sprintf("%v", loginResponse), // Include entire login response (optional)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
