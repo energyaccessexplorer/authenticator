@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/joho/godotenv"
 )
 
@@ -29,7 +29,7 @@ type JWTClaims struct {
 	Role  string                 `json:"role"`
 	Data  map[string]interface{} `json:"data"`
 	ID    string                 `json:"id"`
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 }
 
 var (
