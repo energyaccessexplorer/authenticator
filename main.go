@@ -144,7 +144,7 @@ func loginUser(config *AppConfig, conn net.Conn, requestBody io.Reader) {
 		return
 	}
 
-	userDBURL := fmt.Sprintf("%s/users?email=eq.%s", config.EAEApiBaseURL, loginRequest.Email)
+	userDBURL := fmt.Sprintf("%s/authenticator_user_select?email=eq.%s", config.EAEApiBaseURL, loginRequest.Email)
 	resp, err := http.Get(userDBURL)
 	if err != nil || resp.StatusCode >= 300 {
 		conn.Write([]byte(`{"error": "Failed to fetch user data."}`))
