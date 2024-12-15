@@ -165,14 +165,6 @@ func login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := http.Get(fmt.Sprintf("%s/users?email=eq.%s", eaeAPIURL, u.Email))
-	defer resp.Body.Close()
-
-	if err != nil || resp.StatusCode != http.StatusOK {
-		http.Error(w, "Failed to fetch user data from EAE service", http.StatusInternalServerError)
-		return
-	}
-
 	payload, _ := json.Marshal(map[string]string{
 		"email":    u.Email,
 		"password": u.Password,
@@ -191,8 +183,8 @@ func login(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(body, &y)
 	z := y.Data
 
-	if err != nil || resp.StatusCode != http.StatusOK {
-		http.Error(w, "Authentication failed with Resource Watch", http.StatusUnauthorized)
+	if err = upsert(y.Data, u); err != nil {
+		http.Error(w, "Failed to sync user data to EAE service", http.StatusInternalServerError)
 		return
 	}
 
