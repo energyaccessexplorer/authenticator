@@ -69,7 +69,7 @@ func validateHeaders(r *http.Request) error {
 	return nil
 }
 
-func registerUser(w http.ResponseWriter, r *http.Request) {
+func signup(w http.ResponseWriter, r *http.Request) {
 	if err := validateHeaders(r); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -186,7 +186,7 @@ func main() {
 	loadEnv()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/signup", registerUser)
+	mux.HandleFunc("/signup", signup)
 	mux.HandleFunc("/login", login)
 
 	if _, err := os.Stat(socketPath); err == nil {
