@@ -70,10 +70,9 @@ func loadEnv() {
 
 func upsert(z RWUser, u ReqUser) (err error) {
 	payload, _ := json.Marshal(map[string]any{
-		"email":    z.Email,
-		"auth0":    z.ID,
-		"about":    u.About,
-		"disabled": true,
+		"email": z.Email,
+		"rwid":  z.ID,
+		"about": u.About,
 	})
 
 	q, _ := http.NewRequest(
