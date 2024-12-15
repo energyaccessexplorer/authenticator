@@ -13,14 +13,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
-type RegisterUserRequest struct {
-	Email string         `json:"email"`
-	About map[string]any `json:"about"`
-}
-
-type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+type ReqUser struct {
+	Email    string         `json:"email"`
+	Password string         `json:"password"`
+	About    map[string]any `json:"about"`
 }
 
 type RWError struct {
@@ -72,21 +68,54 @@ func loadEnv() {
 	socketPath = os.Getenv("SOCKET")
 }
 
-func signup(w http.ResponseWriter, r *http.Request) {
-	var req RegisterUserRequest
+func upsert(z RWUser, u ReqUser) (err error) {
+	payload, _ := json.Marshal(map[string]any{
+		"email":    z.Email,
+		"auth0":    z.ID,
+		"about":    u.About,
+		"disabled": true,
+	})
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	q, _ := http.NewRequest(
+		"POST",
+		fmt.Sprintf("%s/authenticator_user_upsert", eaeAPIURL),
+		bytes.NewBuffer(payload),
+	)
+
+	q.Header.Set("Content-Type", "application/json")
+	q.Header.Set("Accept-Profile", "authenticator")
+	q.Header.Set("x-authenticator-psk", preSharedKey)
+
+	client := &http.Client{}
+
+	resp, err := client.Do(q)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return err
+	}
+
+	return nil
+}
+
+func signup(w http.ResponseWriter, r *http.Request) {
+	var u ReqUser
+
+	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.Email == "" {
+	if u.Email == "" {
 		http.Error(w, "Missing required fields: email", http.StatusBadRequest)
 		return
 	}
 
 	payload, _ := json.Marshal(map[string]any{
-		"email": req.Email,
+		"email": u.Email,
 		"apps":  []string{applicationName},
 	})
 
@@ -114,36 +143,8 @@ func signup(w http.ResponseWriter, r *http.Request) {
 
 	var y RWUserWrapper
 	json.Unmarshal(body, &y)
-	z := y.Data
 
-	eaePayload := map[string]any{
-		"email":    z.Email,
-		"auth0":    z.ID,
-		"about":    req.About,
-		"disabled": true,
-	}
-
-	eaePayloadJSON, _ := json.Marshal(eaePayload)
-
-	q, _ := http.NewRequest(
-		"POST",
-		fmt.Sprintf("%s/authenticator_user_upsert", eaeAPIURL),
-		bytes.NewBuffer(eaePayloadJSON),
-	)
-
-	q.Header.Set("Content-Type", "application/json")
-	q.Header.Set("Accept-Profile", "authenticator")
-	q.Header.Set("x-authenticator-psk", preSharedKey)
-
-	client := &http.Client{}
-
-	resp, err = client.Do(q)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if err != nil || resp.StatusCode != http.StatusOK {
+	if err = upsert(y.Data, u); err != nil {
 		http.Error(w, "Failed to sync user data to EAE service", http.StatusInternalServerError)
 		return
 	}
@@ -152,19 +153,19 @@ func signup(w http.ResponseWriter, r *http.Request) {
 }
 
 func login(w http.ResponseWriter, r *http.Request) {
-	var req LoginRequest
+	var u ReqUser
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.Email == "" || req.Password == "" {
+	if u.Email == "" || u.Password == "" {
 		http.Error(w, "Missing required fields: email, password", http.StatusBadRequest)
 		return
 	}
 
-	resp, err := http.Get(fmt.Sprintf("%s/users?email=eq.%s", eaeAPIURL, req.Email))
+	resp, err := http.Get(fmt.Sprintf("%s/users?email=eq.%s", eaeAPIURL, u.Email))
 	defer resp.Body.Close()
 
 	if err != nil || resp.StatusCode != http.StatusOK {
@@ -173,8 +174,8 @@ func login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authPayload := map[string]string{
-		"email":    req.Email,
-		"password": req.Password,
+		"email":    u.Email,
+		"password": u.Password,
 	}
 
 	authPayloadJSON, _ := json.Marshal(authPayload)
