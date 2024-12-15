@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/joho/godotenv"
+	_ "github.com/joho/godotenv/autoload"
 )
 
 type ReqUser struct {
@@ -47,27 +47,13 @@ type RWUserWrapper struct {
 }
 
 var (
-	resourceWatchURL string
-	eaeAPIURL        string
-	callbackURL      string
-	applicationName  string
-	preSharedKey     string
-	socketPath       string
+	RW_URL            = os.Getenv("RW_URL")
+	EAE_URL           = os.Getenv("EAE_URL")
+	CALLBACK_URL      = os.Getenv("CALLBACK_URL")
+	APP_NAME          = os.Getenv("APP_NAME")
+	AUTHENTICATOR_PSK = os.Getenv("AUTHENTICATOR_PSK")
+	SOCKET            = os.Getenv("SOCKET")
 )
-
-func loadEnv() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, loading defaults.")
-	}
-
-	resourceWatchURL = "https://api.resourcewatch.org"
-
-	eaeAPIURL = os.Getenv("EAE_API_URL")
-	callbackURL = os.Getenv("CALLBACK_URL")
-	applicationName = os.Getenv("APP_NAME")
-	preSharedKey = os.Getenv("AUTHENTICATOR_PSK")
-	socketPath = os.Getenv("SOCKET")
-}
 
 func upsert(z RWUser, u ReqUser) (err error) {
 	payload, _ := json.Marshal(map[string]any{
@@ -78,13 +64,13 @@ func upsert(z RWUser, u ReqUser) (err error) {
 
 	q, _ := http.NewRequest(
 		"POST",
-		fmt.Sprintf("%s/authenticator_user_upsert", eaeAPIURL),
+		fmt.Sprintf("%s/authenticator_user_upsert", EAE_URL),
 		bytes.NewBuffer(payload),
 	)
 
 	q.Header.Set("Content-Type", "application/json")
 	q.Header.Set("Accept-Profile", "authenticator")
-	q.Header.Set("x-authenticator-psk", preSharedKey)
+	q.Header.Set("x-authenticator-psk", AUTHENTICATOR_PSK)
 
 	client := &http.Client{}
 
@@ -114,11 +100,11 @@ func signup(w http.ResponseWriter, r *http.Request) {
 
 	payload, _ := json.Marshal(map[string]any{
 		"email": u.Email,
-		"apps":  []string{applicationName},
+		"apps":  []string{APP_NAME},
 	})
 
 	resp, err := http.Post(
-		fmt.Sprintf("%s/auth/sign-up?callbackUrl=%s", resourceWatchURL, callbackURL),
+		fmt.Sprintf("%s/auth/sign-up?callbackUrl=%s", RW_URL, CALLBACK_URL),
 		"application/json",
 		bytes.NewReader(payload),
 	)
@@ -164,7 +150,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 	})
 
 	resp, err := http.Post(
-		fmt.Sprintf("%s/auth/login", resourceWatchURL),
+		fmt.Sprintf("%s/auth/login", RW_URL),
 		"application/json",
 		bytes.NewReader(payload),
 	)
@@ -200,23 +186,21 @@ func login(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	loadEnv()
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/signup", signup)
 	mux.HandleFunc("/login", login)
 
-	if _, err := os.Stat(socketPath); err == nil {
-		os.Remove(socketPath)
+	if _, err := os.Stat(SOCKET); err == nil {
+		os.Remove(SOCKET)
 	}
 
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := net.Listen("unix", SOCKET)
 	if err != nil {
 		log.Fatalf("Failed to listen on socket: %v", err)
 	}
 	defer listener.Close()
 
-	log.Printf("Server is listening on %s", socketPath)
+	log.Printf("Server is listening on %s", SOCKET)
 
 	if err := http.Serve(listener, mux); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
