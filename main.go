@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -57,24 +56,7 @@ func loadEnv() {
 	socketPath = os.Getenv("SOCKET")
 }
 
-func validateHeaders(r *http.Request) error {
-	if r.Header.Get("x-authenticator-psk") != preSharedKey {
-		return errors.New("invalid PSK")
-	}
-
-	if r.Header.Get("Accept-Profile") != "authenticator" {
-		return errors.New("invalid profile")
-	}
-
-	return nil
-}
-
 func signup(w http.ResponseWriter, r *http.Request) {
-	if err := validateHeaders(r); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-
 	var req RegisterUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -112,11 +94,22 @@ func signup(w http.ResponseWriter, r *http.Request) {
 
 	eaePayloadJSON, _ := json.Marshal(eaePayload)
 
-	resp, err = http.Post(
+	q, _ := http.NewRequest(
+		"POST",
 		fmt.Sprintf("%s/authenticator_user_upsert", eaeAPIURL),
-		"application/json",
-		bytes.NewReader(eaePayloadJSON),
+		bytes.NewBuffer(eaePayloadJSON),
 	)
+
+	q.Header.Set("Content-Type", "application/json")
+	q.Header.Set("Accept-Profile", "authenticator")
+	q.Header.Set("x-authenticator-psk", preSharedKey)
+
+	client := &http.Client{}
+
+	resp, err = client.Do(q)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer resp.Body.Close()
 
 	if err != nil || resp.StatusCode != http.StatusOK {
@@ -151,6 +144,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 		"email":    req.Email,
 		"password": req.Password,
 	}
+
 	authPayloadJSON, _ := json.Marshal(authPayload)
 
 	authResp, err := http.Post(
