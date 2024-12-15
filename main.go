@@ -173,27 +173,25 @@ func login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authPayload := map[string]string{
+	payload, _ := json.Marshal(map[string]string{
 		"email":    u.Email,
 		"password": u.Password,
-	}
+	})
 
-	authPayloadJSON, _ := json.Marshal(authPayload)
-
-	authResp, err := http.Post(
+	resp, err = http.Post(
 		fmt.Sprintf("%s/auth/login", resourceWatchURL),
 		"application/json",
-		bytes.NewReader(authPayloadJSON),
+		bytes.NewReader(payload),
 	)
-	defer authResp.Body.Close()
+	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(authResp.Body)
+	body, _ := io.ReadAll(resp.Body)
 
 	var y RWUserWrapper
 	json.Unmarshal(body, &y)
 	z := y.Data
 
-	if err != nil || authResp.StatusCode != http.StatusOK {
+	if err != nil || resp.StatusCode != http.StatusOK {
 		http.Error(w, "Authentication failed with Resource Watch", http.StatusUnauthorized)
 		return
 	}
