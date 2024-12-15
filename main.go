@@ -39,7 +39,7 @@ var (
 	callbackURL      string
 	applicationName  string
 	preSharedKey     string
-	socketPath       = "/tmp/server.sock"
+	socketPath       string
 )
 
 func loadEnv() {
@@ -47,12 +47,14 @@ func loadEnv() {
 		log.Println("No .env file found, loading defaults.")
 	}
 
-	jwtSecretKey = os.Getenv("PGREST_SECRET")
 	resourceWatchURL = "https://api.resourcewatch.org"
+
+	jwtSecretKey = os.Getenv("JWT_SECRET")
 	eaeAPIURL = os.Getenv("EAE_API_URL")
 	callbackURL = os.Getenv("CALLBACK_URL")
 	applicationName = os.Getenv("APP_NAME")
-	preSharedKey = os.Getenv("PSK")
+	preSharedKey = os.Getenv("AUTHENTICATOR_PSK")
+	socketPath = os.Getenv("SOCKET")
 }
 
 func validateHeaders(r *http.Request) error {
