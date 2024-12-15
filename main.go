@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/joho/godotenv"
 )
 
@@ -22,14 +21,6 @@ type RegisterUserRequest struct {
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
-}
-
-type JWTClaims struct {
-	Email string         `json:"email"`
-	Role  string         `json:"role"`
-	Data  map[string]any `json:"data"`
-	ID    string         `json:"id"`
-	jwt.RegisteredClaims
 }
 
 type RWError struct {
@@ -59,7 +50,6 @@ type RWUserWrapper struct {
 }
 
 var (
-	jwtSecretKey     string
 	resourceWatchURL string
 	eaeAPIURL        string
 	callbackURL      string
@@ -75,7 +65,6 @@ func loadEnv() {
 
 	resourceWatchURL = "https://api.resourcewatch.org"
 
-	jwtSecretKey = os.Getenv("JWT_SECRET")
 	eaeAPIURL = os.Getenv("EAE_API_URL")
 	callbackURL = os.Getenv("CALLBACK_URL")
 	applicationName = os.Getenv("APP_NAME")
@@ -164,6 +153,7 @@ func signup(w http.ResponseWriter, r *http.Request) {
 
 func login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -196,26 +186,21 @@ func login(w http.ResponseWriter, r *http.Request) {
 	)
 	defer authResp.Body.Close()
 
+	body, _ := io.ReadAll(authResp.Body)
+
+	var y RWUserWrapper
+	json.Unmarshal(body, &y)
+	z := y.Data
+
 	if err != nil || authResp.StatusCode != http.StatusOK {
 		http.Error(w, "Authentication failed with Resource Watch", http.StatusUnauthorized)
 		return
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, JWTClaims{
-		Email: req.Email,
-		Role:  "guest",
-		Data:  map[string]any{"example": "data"},
-	})
-
-	tokenString, err := token.SignedString([]byte(jwtSecretKey))
-	if err != nil {
-		http.Error(w, "Error generating token", http.StatusInternalServerError)
-		return
-	}
+	j, _ := json.Marshal(map[string]string{"token": z.Token})
 
 	w.Header().Set("Content-Type", "application/json")
-
-	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+	fmt.Fprintln(w, string(j))
 }
 
 func main() {
