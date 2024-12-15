@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -88,13 +89,16 @@ func upsert(z RWUser, u ReqUser) (err error) {
 	client := &http.Client{}
 
 	resp, err := client.Do(q)
-	if err != nil {
-		log.Fatal(err)
-	}
 	defer resp.Body.Close()
 
-	if err != nil || resp.StatusCode != http.StatusOK {
+	if err != nil {
 		return err
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return errors.New(fmt.Sprintf("%d: %s", resp.StatusCode, body))
 	}
 
 	return nil
@@ -105,11 +109,6 @@ func signup(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if u.Email == "" {
-		http.Error(w, "Missing required fields: email", http.StatusBadRequest)
 		return
 	}
 
@@ -144,7 +143,7 @@ func signup(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(body, &y)
 
 	if err = upsert(y.Data, u); err != nil {
-		http.Error(w, "Failed to sync user data to EAE service", http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -159,35 +158,42 @@ func login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if u.Email == "" || u.Password == "" {
-		http.Error(w, "Missing required fields: email, password", http.StatusBadRequest)
-		return
-	}
-
 	payload, _ := json.Marshal(map[string]string{
 		"email":    u.Email,
 		"password": u.Password,
 	})
 
-	resp, err = http.Post(
+	resp, err := http.Post(
 		fmt.Sprintf("%s/auth/login", resourceWatchURL),
 		"application/json",
 		bytes.NewReader(payload),
 	)
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-
-	var y RWUserWrapper
-	json.Unmarshal(body, &y)
-	z := y.Data
-
-	if err = upsert(y.Data, u); err != nil {
-		http.Error(w, "Failed to sync user data to EAE service", http.StatusInternalServerError)
+	if err != nil {
+		http.Error(w, "Failed to login at Resource Watch", http.StatusInternalServerError)
 		return
 	}
 
-	j, _ := json.Marshal(map[string]string{"token": z.Token})
+	body, _ := io.ReadAll(resp.Body)
+
+	var x RWErrorWrapper
+
+	if resp.StatusCode != http.StatusOK {
+		json.Unmarshal(body, &x)
+		http.Error(w, x.Errors[0].Details, x.Errors[0].Status)
+		return
+	}
+
+	var y RWUserWrapper
+	json.Unmarshal(body, &y)
+
+	if err = upsert(y.Data, u); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	j, _ := json.Marshal(map[string]string{"token": y.Data.Token})
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintln(w, string(j))
