@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -14,8 +15,8 @@ import (
 )
 
 type RegisterUserRequest struct {
-	Email    string         `json:"email"`
-	JsonData map[string]any `json:"jsondata"`
+	Email string         `json:"email"`
+	About map[string]any `json:"about"`
 }
 
 type LoginRequest struct {
@@ -29,6 +30,32 @@ type JWTClaims struct {
 	Data  map[string]any `json:"data"`
 	ID    string         `json:"id"`
 	jwt.RegisteredClaims
+}
+
+type RWError struct {
+	Status  int    `json:"status"`
+	Details string `json:"detail"`
+}
+
+type RWErrorWrapper struct {
+	Errors []RWError `json:"errors"`
+}
+
+type RWUser struct {
+	ID            string         `json:"id"`
+	Email         string         `json:"email"`
+	Token         string         `json:"token"`
+	Created       string         `json:"createdAt"`
+	Updated       string         `json:"updatedAt"`
+	Role          string         `json:"role"`
+	Provider      string         `json:"provider"`
+	Organisation  []string       `json:"organizations"`
+	Applications  []string       `json:"applications"`
+	ExtraUserData map[string]any `json:"extraUserData"`
+}
+
+type RWUserWrapper struct {
+	Data RWUser `json:"data"`
 }
 
 var (
@@ -58,19 +85,19 @@ func loadEnv() {
 
 func signup(w http.ResponseWriter, r *http.Request) {
 	var req RegisterUserRequest
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.Email == "" || req.JsonData == nil {
-		http.Error(w, "Missing required fields: email, jsondata", http.StatusBadRequest)
+	if req.Email == "" {
+		http.Error(w, "Missing required fields: email", http.StatusBadRequest)
 		return
 	}
 
 	payload, _ := json.Marshal(map[string]any{
 		"email": req.Email,
-		"name":  req.JsonData["first_name"],
 		"apps":  []string{applicationName},
 	})
 
@@ -81,15 +108,30 @@ func signup(w http.ResponseWriter, r *http.Request) {
 	)
 	defer resp.Body.Close()
 
-	if err != nil || resp.StatusCode != http.StatusOK {
+	if err != nil {
 		http.Error(w, "Failed to create user on Resource Watch", http.StatusInternalServerError)
 		return
 	}
 
+	body, _ := io.ReadAll(resp.Body)
+
+	var x RWErrorWrapper
+
+	if resp.StatusCode != http.StatusOK {
+		json.Unmarshal(body, &x)
+		http.Error(w, x.Errors[0].Details, x.Errors[0].Status)
+		return
+	}
+
+	var y RWUserWrapper
+	json.Unmarshal(body, &y)
+	z := y.Data
+
 	eaePayload := map[string]any{
-		"email": req.Email,
-		"role":  "guest",
-		"data":  req.JsonData,
+		"email":    z.Email,
+		"auth0":    z.ID,
+		"about":    req.About,
+		"disabled": true,
 	}
 
 	eaePayloadJSON, _ := json.Marshal(eaePayload)
