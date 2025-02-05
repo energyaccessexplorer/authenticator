@@ -62,14 +62,17 @@ func upsert(z RWUser, u ReqUser) (err error) {
 		"about": u.About,
 	})
 
-	q, _ := http.NewRequest(
+	q, err := http.NewRequest(
 		"POST",
-		fmt.Sprintf("%s/authenticator_user_upsert", EAE_URL),
+		fmt.Sprintf("%s/rpc/user_upsert", EAE_URL),
 		bytes.NewBuffer(payload),
 	)
+	if err != nil {
+		return err
+	}
 
 	q.Header.Set("Content-Type", "application/json")
-	q.Header.Set("Accept-Profile", "authenticator")
+	q.Header.Set("Content-Profile", "authenticator")
 	q.Header.Set("x-authenticator-psk", AUTHENTICATOR_PSK)
 
 	client := &http.Client{}
