@@ -225,6 +225,8 @@ func main() {
 	}
 	defer listener.Close()
 
+	os.Chmod(SOCKET, 0777)
+
 	log.Printf("Server is listening on %s", SOCKET)
 
 	if err := http.Serve(listener, mux); err != nil {
