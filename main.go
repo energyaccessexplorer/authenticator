@@ -10,8 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-
-	_ "github.com/joho/godotenv/autoload"
 )
 
 type ReqUser struct {
@@ -189,6 +187,30 @@ func login(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	if RW_URL == "" {
+		panic("RW_URL env variable is required")
+	}
+
+	if EAE_URL == "" {
+		panic("EAE_URL env variable is required")
+	}
+
+	if CALLBACK_URL == "" {
+		panic("CALLBACK_URL env variable is required")
+	}
+
+	if APP_NAME == "" {
+		panic("APP_NAME env variable is required")
+	}
+
+	if AUTHENTICATOR_PSK == "" {
+		panic("AUTHENTICATOR_PSK env variable is required")
+	}
+
+	if SOCKET == "" {
+		panic("SOCKET env variable is required")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/signup", signup)
 	mux.HandleFunc("/login", login)
