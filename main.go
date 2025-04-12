@@ -1,254 +1,250 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"os"
-	"strings"
-
 	"net/http"
-
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/joho/godotenv"
+	"os"
 )
 
-type AppConfig struct {
-	ServerSocket     string
-	EAEApiBaseURL    string
-	ResourceWatchURL string
-	JWTSecretKey     string
-	PreSharedKey     string
-	CallbackURL      string
-	ApplicationName  string
-	AllowedOrigins   string
+type ReqUser struct {
+	Email    string         `json:"email"`
+	Password string         `json:"password"`
+	About    map[string]any `json:"about"`
 }
 
-type UserPayload struct {
-	Email string   `json:"email"`
-	Name  string   `json:"name"`
-	Apps  []string `json:"apps"`
+type RWError struct {
+	Status  int    `json:"status"`
+	Details string `json:"detail"`
 }
 
-type JSONData struct {
-	FirstName string `json:"first_name"`
+type RWErrorWrapper struct {
+	Errors []RWError `json:"errors"`
 }
 
-type RegisterRequest struct {
-	Email    string   `json:"email"`
-	JSONData JSONData `json:"jsondata"`
+type RWUser struct {
+	ID            string         `json:"id"`
+	Email         string         `json:"email"`
+	Token         string         `json:"token"`
+	Created       string         `json:"createdAt"`
+	Updated       string         `json:"updatedAt"`
+	Role          string         `json:"role"`
+	Provider      string         `json:"provider"`
+	Organisation  []string       `json:"organizations"`
+	Applications  []string       `json:"applications"`
+	ExtraUserData map[string]any `json:"extraUserData"`
 }
 
-type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+type RWUserWrapper struct {
+	Data RWUser `json:"data"`
 }
 
-func loadConfig() (*AppConfig, error) {
-	if err := godotenv.Load(); err != nil {
-		return nil, err
+var (
+	RW_URL            = os.Getenv("RW_URL")
+	EAE_URL           = os.Getenv("EAE_URL")
+	CALLBACK_URL      = os.Getenv("CALLBACK_URL")
+	APP_NAME          = os.Getenv("APP_NAME")
+	AUTHENTICATOR_PSK = os.Getenv("AUTHENTICATOR_PSK")
+	SOCKET            = os.Getenv("SOCKET")
+)
+
+func upsert(z RWUser, u ReqUser) (err error) {
+	payload, err := json.Marshal(map[string]any{
+		"email": z.Email,
+		"rwid":  z.ID,
+		"about": u.About,
+	})
+
+	q, err := http.NewRequest(
+		"POST",
+		fmt.Sprintf("%s/rpc/user_upsert", EAE_URL),
+		bytes.NewBuffer(payload),
+	)
+
+	if err != nil {
+		return err
 	}
 
-	return &AppConfig{
-		ServerSocket:     os.Getenv("SOCKET"),
-		EAEApiBaseURL:    os.Getenv("EAE_API_URL"),
-		ResourceWatchURL: "https://api.resourcewatch.org",
-		JWTSecretKey:     os.Getenv("PGREST_SECRET"),
-		PreSharedKey:     os.Getenv("PSK"),
-		CallbackURL:      os.Getenv("CALLBACK_URL"),
-		ApplicationName:  os.Getenv("APP_NAME"),
-		AllowedOrigins:   os.Getenv("ALLOWED_ORIGINS"),
-	}, nil
-}
+	q.Header.Set("Content-Type", "application/json")
+	q.Header.Set("Content-Profile", "authenticator")
+	q.Header.Set("x-authenticator-psk", AUTHENTICATOR_PSK)
 
-func marshalJSON(data interface{}) io.Reader {
-	jsonData, _ := json.Marshal(data)
-	return strings.NewReader(string(jsonData))
-}
+	client := &http.Client{}
 
-func validateRequiredFields(data map[string]interface{}, fields []string) error {
-	missingFields := []string{}
-	for _, field := range fields {
-		if _, exists := data[field]; !exists {
-			missingFields = append(missingFields, field)
-		}
+	resp, err := client.Do(q)
+
+	if err != nil {
+		return err
 	}
-	if len(missingFields) > 0 {
-		return errors.New("Missing required fields: " + strings.Join(missingFields, ", "))
+
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return errors.New(fmt.Sprintf("%d: %s", resp.StatusCode, body))
 	}
+
 	return nil
 }
 
-func registerUser(config *AppConfig, conn net.Conn, requestBody io.Reader) {
-	var registerRequest RegisterRequest
-	if err := json.NewDecoder(requestBody).Decode(&registerRequest); err != nil {
-		conn.Write([]byte(fmt.Sprintf(`{"error": "Invalid request payload: %s"}`, err.Error())))
+func signup(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "OPTIONS":
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	requiredFields := []string{"email", "jsondata"}
-	requestMap := map[string]interface{}{
-		"email":    registerRequest.Email,
-		"jsondata": registerRequest.JSONData,
-	}
-	if err := validateRequiredFields(requestMap, requiredFields); err != nil {
-		conn.Write([]byte(fmt.Sprintf(`{"error": "%s"}`, err.Error())))
+	var u ReqUser
+
+	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	userPayload := UserPayload{
-		Email: registerRequest.Email,
-		Name:  registerRequest.JSONData.FirstName,
-		Apps:  []string{config.ApplicationName},
-	}
+	payload, _ := json.Marshal(map[string]any{
+		"email": u.Email,
+		"apps":  []string{APP_NAME},
+	})
 
-	signupURL := fmt.Sprintf("%s/auth/sign-up?callbackUrl=%s", config.ResourceWatchURL, config.CallbackURL)
-	response, err := http.Post(signupURL, "application/json", marshalJSON(userPayload))
-	if err != nil || response.StatusCode >= 300 {
-		conn.Write([]byte(`{"error": "Failed to create user on Resource Watch."}`))
+	resp, err := http.Post(
+		fmt.Sprintf("%s/auth/sign-up?callbackUrl=%s", RW_URL, CALLBACK_URL),
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	defer resp.Body.Close()
+
+	if err != nil {
+		http.Error(w, "Failed to create user on Resource Watch", http.StatusInternalServerError)
 		return
 	}
 
-	syncData := map[string]interface{}{
-		"email": registerRequest.Email,
-		"role":  "guest",
-		"data":  registerRequest.JSONData,
-	}
-	eaeURL := fmt.Sprintf("%s/authenticator_user_upsert", config.EAEApiBaseURL)
-	eaeResponse, err := http.Post(eaeURL, "application/json", marshalJSON(syncData))
-	if err != nil || eaeResponse.StatusCode >= 300 {
-		conn.Write([]byte(`{"error": "Failed to sync user data to EAE service."}`))
+	body, _ := io.ReadAll(resp.Body)
+
+	var x RWErrorWrapper
+
+	if resp.StatusCode != http.StatusOK {
+		json.Unmarshal(body, &x)
+		http.Error(w, x.Errors[0].Details, x.Errors[0].Status)
 		return
 	}
 
-	conn.Write([]byte("User registered successfully! Please check your email inbox to activate your account."))
+	var y RWUserWrapper
+	json.Unmarshal(body, &y)
+
+	if err = upsert(y.Data, u); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Fprintln(w, "User registered successfully! Please check your email inbox to activate your account.")
 }
 
-func loginUser(config *AppConfig, conn net.Conn, requestBody io.Reader) {
-	var loginRequest LoginRequest
-	if err := json.NewDecoder(requestBody).Decode(&loginRequest); err != nil {
-		conn.Write([]byte(fmt.Sprintf(`{"error": "Invalid request payload: %s"}`, err.Error())))
+func login(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "OPTIONS":
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	requiredFields := []string{"email", "password"}
-	requestMap := map[string]interface{}{
-		"email":    loginRequest.Email,
-		"password": loginRequest.Password,
-	}
-	if err := validateRequiredFields(requestMap, requiredFields); err != nil {
-		conn.Write([]byte(fmt.Sprintf(`{"error": "%s"}`, err.Error())))
+	var u ReqUser
+
+	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	userDBURL := fmt.Sprintf("%s/authenticator_user_select?email=eq.%s", config.EAEApiBaseURL, loginRequest.Email)
-	resp, err := http.Get(userDBURL)
-	if err != nil || resp.StatusCode >= 300 {
-		conn.Write([]byte(`{"error": "Failed to fetch user data."}`))
+	payload, _ := json.Marshal(map[string]string{
+		"email":    u.Email,
+		"password": u.Password,
+	})
+
+	resp, err := http.Post(
+		fmt.Sprintf("%s/auth/login", RW_URL),
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	defer resp.Body.Close()
+
+	if err != nil {
+		http.Error(w, "Failed to login at Resource Watch", http.StatusInternalServerError)
 		return
 	}
 
-	var userDBData []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&userDBData); err != nil {
-		conn.Write([]byte(fmt.Sprintf(`{"error": "Failed to parse user data: %s"}`, err.Error())))
+	body, _ := io.ReadAll(resp.Body)
+
+	var x RWErrorWrapper
+
+	if resp.StatusCode != http.StatusOK {
+		json.Unmarshal(body, &x)
+		http.Error(w, x.Errors[0].Details, x.Errors[0].Status)
 		return
 	}
 
-	loginPayload := map[string]string{
-		"email":    loginRequest.Email,
-		"password": loginRequest.Password,
-	}
-	authResp, err := http.Post(fmt.Sprintf("%s/auth/login", config.ResourceWatchURL), "application/json", marshalJSON(loginPayload))
-	if err != nil || authResp.StatusCode == 401 {
-		if len(userDBData) == 0 {
-			conn.Write([]byte(`{"error": "Unauthorized", "detail": "Invalid email/password combination."}`))
-			return
-		}
+	var y RWUserWrapper
+	json.Unmarshal(body, &y)
 
-		migrationPayload := UserPayload{
-			Email: userDBData[0]["email"].(string),
-			Name:  userDBData[0]["data"].(map[string]interface{})["first_name"].(string),
-			Apps:  []string{config.ApplicationName},
-		}
-		_, migrationErr := http.Post(fmt.Sprintf("%s/auth/sign-up?callbackUrl=%s", config.ResourceWatchURL, config.CallbackURL), "application/json", marshalJSON(migrationPayload))
-		if migrationErr != nil {
-			conn.Write([]byte(`{"error": "Migration failed. Please try again later."}`))
-			return
-		}
-		conn.Write([]byte(`{"error": "Migrated", "detail": "Please check your email to reactivate your account."}`))
+	if err = upsert(y.Data, u); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if authResp.StatusCode == 200 {
-		jwtPayload := map[string]interface{}{
-			"email": userDBData[0]["email"],
-			"role":  userDBData[0]["role"],
-			"data":  userDBData[0]["data"],
-			"id":    userDBData[0]["id"],
-		}
-		jwtToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(jwtPayload)).SignedString([]byte(config.JWTSecretKey))
-		if err != nil {
-			conn.Write([]byte(`{"error": "Failed to generate JWT."}`))
-			return
-		}
-		response := map[string]interface{}{
-			"token": jwtToken,
-			"data":  jwtPayload["data"],
-		}
-		conn.Write(marshalJSON(response))
-		return
-	}
+	j, _ := json.Marshal(map[string]string{"token": y.Data.Token})
 
-	conn.Write([]byte(`{"error": "Login failed. Please try again later."}`))
-}
-
-func handleConnection(config *AppConfig, conn net.Conn) {
-	defer conn.Close()
-	var request map[string]interface{}
-	if err := json.NewDecoder(conn).Decode(&request); err != nil {
-		conn.Write([]byte(fmt.Sprintf(`{"error": "Failed to parse request: %s"}`, err.Error())))
-		return
-	}
-
-	action, exists := request["action"]
-	if !exists {
-		conn.Write([]byte(`{"error": "Missing 'action' in request."}`))
-		return
-	}
-
-	switch action {
-	case "register":
-		registerUser(config, conn, marshalJSON(request["data"]))
-	case "login":
-		loginUser(config, conn, marshalJSON(request["data"]))
-	default:
-		conn.Write([]byte(`{"error": "Unknown action."}`))
-	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintln(w, string(j))
 }
 
 func main() {
-	config, err := loadConfig()
-	if err != nil {
-		log.Fatalf("Failed to load configuration: %s", err.Error())
+	if RW_URL == "" {
+		panic("RW_URL env variable is required")
 	}
 
-	listener, err := net.Listen("unix", config.ServerSocket)
-	if err != nil {
-		log.Fatalf("Failed to start server on socket: %s", err.Error())
+	if EAE_URL == "" {
+		panic("EAE_URL env variable is required")
 	}
-	defer os.Remove(config.ServerSocket)
 
-	log.Printf("Server is running on socket: %s", config.ServerSocket)
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("Failed to accept connection: %s", err.Error())
-			continue
-		}
+	if CALLBACK_URL == "" {
+		panic("CALLBACK_URL env variable is required")
+	}
 
-		go handleConnection(config, conn)
+	if APP_NAME == "" {
+		panic("APP_NAME env variable is required")
+	}
+
+	if AUTHENTICATOR_PSK == "" {
+		panic("AUTHENTICATOR_PSK env variable is required")
+	}
+
+	if SOCKET == "" {
+		panic("SOCKET env variable is required")
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/signup", signup)
+	mux.HandleFunc("/login", login)
+
+	if _, err := os.Stat(SOCKET); err == nil {
+		os.Remove(SOCKET)
+	}
+
+	listener, err := net.Listen("unix", SOCKET)
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+	defer listener.Close()
+
+	os.Chmod(SOCKET, 0777)
+
+	log.Printf("Server is listening on %s", SOCKET)
+
+	if err := http.Serve(listener, mux); err != nil {
+		log.Fatalf("Failed to serve: %v", err)
 	}
 }
